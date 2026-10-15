@@ -21,7 +21,7 @@ def conectar():
         read_timeout=15,
         write_timeout=15,
         # Conexión cifrada y verificación del certificado del servidor
-        ssl={"ca": Config.DB_SSL_CA},
+        ssl_ca=Config.DB_SSL_CA,
         ssl_verify_cert=True,
         ssl_verify_identity=True,
     )

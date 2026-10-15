@@ -10,8 +10,10 @@ Frontend (repo SIFAT) ──X-API-Key──► Backend (este repo) ──► MyS
 ```
 
 ## Arranque local
+Requiere **Python 3.10 o más reciente**. En Mac, el `python3` del sistema (3.9 con LibreSSL)
+no logra verificar el certificado de RDS: instala uno nuevo con `brew install python@3.12`.
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+/opt/homebrew/bin/python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env            # y llena los valores (ver abajo)
 mkdir -p certs && curl -o certs/global-bundle.pem \
