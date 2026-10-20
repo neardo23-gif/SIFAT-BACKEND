@@ -204,3 +204,98 @@ def test_transaccion_hace_rollback_si_falla(monkeypatch):
         with db.transaccion():
             raise ValueError("falla a la mitad")
     assert estado == {"rollback": True, "close": True}
+
+
+# ---------- login ----------
+from app import contrasenas  # noqa: E402
+
+
+def test_contrasena_se_cifra_y_verifica():
+    h = contrasenas.cifrar("ClaveSegura2026")
+    assert h.startswith("pbkdf2_sha256$600000$") and "ClaveSegura2026" not in h
+    assert contrasenas.verificar("ClaveSegura2026", h)
+    assert not contrasenas.verificar("otra", h)
+    assert not contrasenas.verificar("x", "basura")
+
+
+def test_contrasena_robusta():
+    assert contrasenas.es_robusta("ClaveSegura2026")
+    assert not contrasenas.es_robusta("corta1")
+    assert not contrasenas.es_robusta("sololetraslargas")
+
+
+class CursorLogin(CursorFalso):
+    def __init__(self, usuario):
+        super().__init__()
+        self.usuario = usuario
+
+    def execute(self, sql, params=()):
+        self.ejecutado.append((" ".join(sql.split()), params))
+        self._resultado = [self.usuario] if ("FROM usuarios WHERE email" in sql and self.usuario) else []
+
+
+@pytest.fixture
+def login_api(monkeypatch):
+    monkeypatch.setattr(Config, "BACKEND_API_KEY", CLAVE)
+
+    def crear(usuario):
+        cursor = CursorLogin(usuario)
+        app = crear_app(validar_config=False)
+
+        def conexion_falsa():
+            yield cursor
+
+        app.dependency_overrides[db.obtener_conexion] = conexion_falsa
+        return TestClient(app), cursor
+    return crear
+
+
+def _usuario(**extra):
+    base = {"id_usuario": 1, "nombre": "Ana", "email": "ana@sifat.mx", "rol": "Administrador",
+            "activo": 1, "password_hash": contrasenas.cifrar("ClaveSegura2026"),
+            "intentos_fallidos": 0, "bloqueado": 0}
+    return {**base, **extra}
+
+
+def test_login_correcto(login_api):
+    c, cursor = login_api(_usuario())
+    r = c.post("/auth/login", headers=H, json={"email": "ana@sifat.mx", "password": "ClaveSegura2026"})
+    assert r.status_code == 200
+    assert r.json() == {"id_usuario": 1, "nombre": "Ana", "email": "ana@sifat.mx", "rol": "Administrador"}
+    assert "password_hash" not in r.text
+
+
+def test_login_incorrecto_suma_intento(login_api):
+    c, cursor = login_api(_usuario(intentos_fallidos=1))
+    r = c.post("/auth/login", headers=H, json={"email": "ana@sifat.mx", "password": "mala"})
+    assert r.status_code == 401 and r.json()["mensaje"] == "Correo o contraseña incorrectos"
+    assert any("intentos_fallidos = %s" in s and p == (2, 1) for s, p in cursor.ejecutado)
+
+
+def test_quinto_intento_bloquea(login_api):
+    c, cursor = login_api(_usuario(intentos_fallidos=4))
+    c.post("/auth/login", headers=H, json={"email": "ana@sifat.mx", "password": "mala"})
+    assert any("bloqueado_hasta = CURRENT_TIMESTAMP + INTERVAL" in s for s, _ in cursor.ejecutado)
+
+
+def test_cuenta_bloqueada_no_entra_ni_con_contrasena_correcta(login_api):
+    c, _ = login_api(_usuario(bloqueado=1))
+    r = c.post("/auth/login", headers=H, json={"email": "ana@sifat.mx", "password": "ClaveSegura2026"})
+    assert r.status_code == 423
+
+
+def test_correo_inexistente_mismo_mensaje(login_api):
+    c, _ = login_api(None)
+    r = c.post("/auth/login", headers=H, json={"email": "nadie@sifat.mx", "password": "x"})
+    assert r.status_code == 401 and r.json()["mensaje"] == "Correo o contraseña incorrectos"
+
+
+def test_usuario_sin_contrasena_no_entra(login_api):
+    c, _ = login_api(_usuario(password_hash=None))
+    r = c.post("/auth/login", headers=H, json={"email": "ana@sifat.mx", "password": ""+"x"})
+    assert r.status_code == 401
+
+
+def test_login_requiere_clave_del_frontend(login_api):
+    c, _ = login_api(_usuario())
+    assert c.post("/auth/login", json={"email": "ana@sifat.mx", "password": "x"}).status_code == 401

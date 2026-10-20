@@ -27,6 +27,12 @@ pytest                          # pruebas sin base de datos real
 2. `sql/02_usuario_app.sql`: crea `sifat_app` con permisos mínimos. Cambia la
    contraseña en el script, ejecútalo y **no guardes el archivo con la contraseña**.
 3. `sql/03_datos_iniciales.sql`: catálogos del SAT, usuarios y un cliente de prueba.
+4. `sql/04_login.sql`: agrega a `usuarios` la contraseña cifrada y el bloqueo por intentos.
+
+Después asigna la contraseña de cada usuario desde la terminal (no se muestra al escribirla):
+```bash
+python -m app.asignar_contrasena ana.lopez@sifat.mx
+```
 
 La IP pública de cada integrante debe estar en las reglas de entrada del grupo de
 seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
@@ -45,6 +51,7 @@ seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/salud` | Comprobación de vida |
+| POST | `/auth/login` | Valida correo y contraseña (`email`, `password`); 5 fallos bloquean la cuenta 15 min |
 | GET | `/catalogos` | Regímenes, usos de CFDI, formas y métodos de pago, impuestos, usuarios |
 | GET | `/clientes?incluir_inactivos=&limite=&desde=` | Lista de clientes |
 | GET | `/clientes/{id}` | Un cliente |
@@ -73,5 +80,7 @@ seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
   montos y longitudes con formato estricto.
 - Conexión a MySQL cifrada (TLS) y con verificación del certificado de AWS.
 - Usuario de base de datos sin `DELETE`, `DROP` ni `ALTER`.
+- Contraseñas con PBKDF2-SHA256 (600 000 iteraciones y sal aleatoria); el login responde
+  igual y tarda lo mismo si el correo no existe, y bloquea la cuenta tras 5 intentos.
 - Errores internos responden solo con un `error_id`; el detalle queda en el log.
 - El servidor escucha únicamente en `127.0.0.1`.

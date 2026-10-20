@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import Config
 from .errores import ErrorNegocio, ErrorServicioExterno
-from .routers import catalogos, clientes, facturas, pagos
+from .routers import auth, catalogos, clientes, facturas, pagos
 from .seguridad import requiere_api_key
 
 log = logging.getLogger("sifat")
@@ -28,7 +28,7 @@ def crear_app(validar_config=True):
                   openapi_url="/openapi.json" if docs else None)
 
     protegido = [Depends(requiere_api_key)]
-    for r in (catalogos.router, clientes.router, facturas.router, pagos.router):
+    for r in (auth.router, catalogos.router, clientes.router, facturas.router, pagos.router):
         app.include_router(r, dependencies=protegido)
 
     @app.get("/salud", tags=["Sistema"])
