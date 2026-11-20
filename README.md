@@ -84,3 +84,12 @@ seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
   igual y tarda lo mismo si el correo no existe, y bloquea la cuenta tras 5 intentos.
 - Errores internos responden solo con un `error_id`; el detalle queda en el log.
 - El servidor escucha únicamente en `127.0.0.1`.
+
+## Producción
+Corre en el mismo servidor que el front (repo SIFAT), que es el único que lo consulta.
+1. `.env` con permisos `600` y **`ENABLE_DOCS=false`**.
+2. Copia `deploy/sifat-backend.service` a `/etc/systemd/system/` y actívalo:
+   `sudo systemctl enable --now sifat-backend`.
+3. No abras el puerto 8000 en el firewall: el backend escucha solo en `127.0.0.1`.
+4. El usuario `sifat_app` debe quedarse **sin** `ALTER`, `DROP` ni `DELETE`; los cambios de
+   esquema (como `sql/04_login.sql`) se aplican con el usuario maestro de RDS.

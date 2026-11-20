@@ -1,0 +1,27 @@
+# systemd: /etc/systemd/system/sifat-backend.service
+# Instalar:  sudo systemctl daemon-reload && sudo systemctl enable --now sifat-backend
+# Bitácora:  journalctl -u sifat-backend -f
+[Unit]
+Description=SIFAT backend (FastAPI + uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sifat
+Group=sifat
+WorkingDirectory=/opt/sifat/backend
+# run.py escucha solo en 127.0.0.1:8000; el .env (permisos 600) define la base y las claves.
+# En producción el .env debe tener ENABLE_DOCS=false.
+ExecStart=/opt/sifat/backend/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/sifat/backend
+
+[Install]
+WantedBy=multi-user.target
