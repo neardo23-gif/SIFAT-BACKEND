@@ -299,3 +299,111 @@ def test_usuario_sin_contrasena_no_entra(login_api):
 def test_login_requiere_clave_del_frontend(login_api):
     c, _ = login_api(_usuario())
     assert c.post("/auth/login", json={"email": "ana@sifat.mx", "password": "x"}).status_code == 401
+
+
+# ---------------- Usuarios ----------------
+class CursorUsuarios(CursorFalso):
+    """Simula la tabla usuarios: guarda lo insertado y responde al SELECT."""
+
+    def __init__(self, existentes=()):
+        super().__init__()
+        self.correos = set(existentes)
+        self.insertado = None
+
+    def execute(self, sql, params=()):
+        self.ejecutado.append((" ".join(sql.split()), params))
+        if "SELECT 1 FROM usuarios WHERE email" in sql:
+            self._resultado = [{"1": 1}] if params[0] in self.correos else []
+        elif "INSERT INTO usuarios" in sql:
+            self.insertado = params
+            self.lastrowid = 9
+            self._resultado = []
+        elif "FROM usuarios" in sql and "WHERE id_usuario" in sql:
+            nombre, email, _, rol = self.insertado
+            self._resultado = [{"id_usuario": 9, "nombre": nombre, "email": email, "rol": rol,
+                                "activo": 1, "ultimo_acceso": None, "tiene_contrasena": 1}]
+        else:
+            self._resultado = []
+
+
+@pytest.fixture
+def usuarios_api(monkeypatch):
+    monkeypatch.setattr(Config, "BACKEND_API_KEY", CLAVE)
+
+    def crear(existentes=()):
+        cursor = CursorUsuarios(existentes)
+        app = crear_app(validar_config=False)
+
+        def conexion_falsa():
+            yield cursor
+
+        app.dependency_overrides[db.obtener_conexion] = conexion_falsa
+        return TestClient(app), cursor
+    return crear
+
+
+NUEVO = {"nombre": "María José", "apellidos": "Pérez López", "email": "MJ.Perez@Sifat.mx",
+         "password": "Facturas2026xyz", "rol": "Facturista"}
+
+
+def test_alta_de_usuario_cifra_la_contrasena(usuarios_api):
+    c, cursor = usuarios_api()
+    r = c.post("/usuarios", headers=H, json=NUEVO)
+    assert r.status_code == 201
+    nombre, email, hash_guardado, rol = cursor.insertado
+    assert (nombre, email, rol) == ("María José Pérez López", "mj.perez@sifat.mx", "Facturista")
+    # Se guarda el hash, nunca la contraseña, y el hash verifica
+    assert "Facturas2026xyz" not in hash_guardado
+    assert contrasenas.verificar("Facturas2026xyz", hash_guardado)
+    assert "password" not in r.text and "Facturas2026xyz" not in r.text
+    assert cursor.commits == 1
+
+
+def test_el_nuevo_usuario_puede_iniciar_sesion(usuarios_api, login_api):
+    c, cursor = usuarios_api()
+    c.post("/usuarios", headers=H, json=NUEVO)
+    nombre, email, hash_guardado, rol = cursor.insertado
+    c2, _ = login_api(_usuario(id_usuario=9, nombre=nombre, email=email, rol=rol,
+                               password_hash=hash_guardado))
+    r = c2.post("/auth/login", headers=H, json={"email": email, "password": "Facturas2026xyz"})
+    assert r.status_code == 200 and r.json()["rol"] == "Facturista"
+
+
+def test_correo_repetido_responde_409(usuarios_api):
+    c, cursor = usuarios_api(existentes={"mj.perez@sifat.mx"})
+    r = c.post("/usuarios", headers=H, json=NUEVO)
+    assert r.status_code == 409 and cursor.insertado is None
+
+
+@pytest.mark.parametrize("cambio, codigo", [
+    ({"password": "corta1"}, 422),                       # menos de 12
+    ({"password": "solamenteletras"}, 422),              # sin números
+    ({"password": "123456789012"}, 422),                 # sin letras
+    ({"password": "mj.perez2026abc"}, 422),              # contiene el correo
+    ({"password": "aaaa1111aaaa1111"}, 422),             # demasiado repetitiva
+    ({"nombre": "Ana1"}, 400),                           # número en el nombre
+    ({"nombre": "<script>"}, 400),
+    ({"apellidos": "A"}, 400),                           # muy corto
+    ({"nombre": "Ana  María"}, 400),                     # doble espacio
+    ({"email": "no-es-correo"}, 400),
+    ({"rol": "Gerente"}, 400),                           # rol no permitido
+    ({"rol": "Root"}, 400),
+    ({"activo": False}, 400),                            # campo no declarado
+])
+def test_alta_de_usuario_valida_todo(usuarios_api, cambio, codigo):
+    c, cursor = usuarios_api()
+    r = c.post("/usuarios", headers=H, json={**NUEVO, **cambio})
+    assert r.status_code == codigo, r.json()
+    assert cursor.insertado is None
+
+
+def test_alta_de_usuario_pide_clave_del_frontend(usuarios_api):
+    c, _ = usuarios_api()
+    assert c.post("/usuarios", json=NUEVO).status_code == 401
+
+
+def test_lista_de_usuarios_sin_hash(usuarios_api):
+    c, cursor = usuarios_api()
+    r = c.get("/usuarios", headers=H)
+    assert r.status_code == 200 and r.json() == {"total": 0, "usuarios": []}
+    assert "password_hash IS NOT NULL AS tiene_contrasena" in cursor.ejecutado[0][0]

@@ -63,6 +63,8 @@ seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
 | POST | `/facturas/{folio}/cancelar` | Cancela una factura vigente sin pagos (`motivo`) |
 | GET | `/pagos?folio=` | Lista de pagos |
 | POST | `/pagos` | Registra pago (`folio`, `clave_forma_pago`, `monto`, `referencia?`) |
+| GET | `/usuarios` | Lista de usuarios (sin hash de contraseña) |
+| POST | `/usuarios` | Alta (`nombre`, `apellidos`, `email`, `password`, `rol`): contraseña de 12+ con letras y números, sin nombre ni correo; se guarda cifrada |
 
 ## Reglas de negocio
 - **Integración SQL/NoSQL:** al emitir una factura, cada `id_servicio` se consulta en

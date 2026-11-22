@@ -60,3 +60,18 @@ class PagoNuevo(Estricto):
     clave_forma_pago: str = Field(pattern=r"^\d{2}$")
     monto: Decimal = Field(gt=0, le=Decimal("9999999999.99"), decimal_places=2)
     referencia: Optional[str] = Field(default=None, max_length=100, pattern=TEXTO_SEGURO)
+
+
+# ---------------- Usuarios ----------------
+# Letras (con acentos, ñ y ü), separadas por un espacio, guion o apóstrofo: "José María", "O'Brien"
+NOMBRE_PERSONA = r"^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '\-][A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*$"
+ROLES = ("Administrador", "Facturista")
+
+
+class UsuarioNuevo(Estricto):
+    nombre: str = Field(min_length=2, max_length=50, pattern=NOMBRE_PERSONA)
+    apellidos: str = Field(min_length=2, max_length=49, pattern=NOMBRE_PERSONA)
+    email: str = Field(max_length=120, pattern=EMAIL)
+    # Las reglas de robustez se revisan en la ruta para responder en español
+    password: str = Field(min_length=1, max_length=128)
+    rol: str = Field(pattern=r"^(Administrador|Facturista)$")
