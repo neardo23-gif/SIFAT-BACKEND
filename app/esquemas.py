@@ -2,7 +2,7 @@
 from decimal import Decimal
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 RFC = r"^([A-ZÑ&]{3,4})\d{6}([A-Z\d]{3})$"
 CP = r"^\d{5}$"
@@ -75,3 +75,20 @@ class UsuarioNuevo(Estricto):
     # Las reglas de robustez se revisan en la ruta para responder en español
     password: str = Field(min_length=1, max_length=128)
     rol: str = Field(pattern=r"^(Administrador|Facturista)$")
+
+
+class UsuarioCambios(Estricto):
+    # StrictBool: solo true/false; "no" o "0" se rechazan en lugar de convertirse
+    activo: Optional[StrictBool] = None
+    rol: Optional[str] = Field(default=None, pattern=r"^(Administrador|Facturista)$")
+
+
+class ContrasenaNueva(Estricto):
+    password: str = Field(min_length=1, max_length=128)
+
+
+class CambioPropio(Estricto):
+    """El usuario cambia su propia contraseña: debe dar la actual."""
+    id_usuario: int = Field(gt=0)
+    actual: str = Field(min_length=1, max_length=128)
+    nueva: str = Field(min_length=1, max_length=128)

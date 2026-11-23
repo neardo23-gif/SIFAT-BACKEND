@@ -407,3 +407,159 @@ def test_lista_de_usuarios_sin_hash(usuarios_api):
     r = c.get("/usuarios", headers=H)
     assert r.status_code == 200 and r.json() == {"total": 0, "usuarios": []}
     assert "password_hash IS NOT NULL AS tiene_contrasena" in cursor.ejecutado[0][0]
+
+
+# ---------------- Administración de usuarios y cambio de contraseña ----------------
+class TablaUsuarios(CursorFalso):
+    """Tabla usuarios en memoria que entiende las consultas de usuarios.py y auth.py."""
+
+    def __init__(self, filas):
+        super().__init__()
+        self.filas = {f["id_usuario"]: dict(f) for f in filas}
+
+    def _publica(self, u):
+        return {"id_usuario": u["id_usuario"], "nombre": u["nombre"], "email": u["email"], "rol": u["rol"],
+                "activo": u["activo"], "ultimo_acceso": None, "tiene_contrasena": u["password_hash"] is not None}
+
+    def execute(self, sql, params=()):
+        s = " ".join(sql.split())
+        self.ejecutado.append((s, params))
+        self._resultado = []
+        if s.startswith("SELECT COUNT(*) AS n FROM usuarios"):
+            n = sum(1 for u in self.filas.values() if u["rol"] == "Administrador" and u["activo"]
+                    and u["id_usuario"] != params[0])
+            self._resultado = [{"n": n}]
+        elif "FROM usuarios WHERE id_usuario = %s" in s:
+            u = self.filas.get(params[0])
+            if u:
+                self._resultado = [self._publica(u) if "tiene_contrasena" in s else {**u, "bloqueado": 0}]
+        elif s.startswith("UPDATE usuarios SET password_hash"):
+            self.filas[params[1]].update(password_hash=params[0], intentos_fallidos=0)
+        elif s.startswith("UPDATE usuarios SET intentos_fallidos = %s"):
+            self.filas[params[1]]["intentos_fallidos"] = params[0]
+        elif s.startswith("UPDATE usuarios SET") and "WHERE id_usuario = %s" in s:
+            columnas = [c.split(" = ")[0] for c in s.split("SET ")[1].split(" WHERE")[0].split(", ")]
+            self.filas[params[-1]].update(dict(zip(columnas, params[:-1])))
+
+
+def _fila(id_usuario, rol="Administrador", activo=True, password="ClaveSegura2026", **extra):
+    return {"id_usuario": id_usuario, "nombre": f"Persona {id_usuario}", "email": f"p{id_usuario}@sifat.mx",
+            "rol": rol, "activo": activo, "password_hash": contrasenas.cifrar(password),
+            "intentos_fallidos": 0, **extra}
+
+
+@pytest.fixture
+def tabla_api(monkeypatch):
+    monkeypatch.setattr(Config, "BACKEND_API_KEY", CLAVE)
+
+    def crear(*filas):
+        cursor = TablaUsuarios(filas)
+        app = crear_app(validar_config=False)
+
+        def conexion_falsa():
+            yield cursor
+
+        app.dependency_overrides[db.obtener_conexion] = conexion_falsa
+        return TestClient(app), cursor
+    return crear
+
+
+def test_desactivar_usuario(tabla_api):
+    c, t = tabla_api(_fila(1), _fila(2, rol="Facturista"))
+    r = c.patch("/usuarios/2", headers=H, json={"activo": False})
+    assert r.status_code == 200 and r.json()["activo"] is False
+    assert t.filas[2]["activo"] is False
+
+
+def test_no_se_desactiva_al_ultimo_administrador(tabla_api):
+    c, t = tabla_api(_fila(1), _fila(2, rol="Facturista"))
+    r = c.patch("/usuarios/1", headers=H, json={"activo": False})
+    assert r.status_code == 409 and "al menos un Administrador" in r.json()["mensaje"]
+    assert t.filas[1]["activo"] is True
+    # Tampoco quitándole el rol
+    assert c.patch("/usuarios/1", headers=H, json={"rol": "Facturista"}).status_code == 409
+
+
+def test_con_otro_admin_si_se_puede_desactivar(tabla_api):
+    c, _ = tabla_api(_fila(1), _fila(3))
+    assert c.patch("/usuarios/1", headers=H, json={"activo": False}).status_code == 200
+
+
+@pytest.mark.parametrize("cuerpo", [{}, {"activo": "no"}, {"rol": "Gerente"}, {"email": "x@y.mx"}])
+def test_modificar_usuario_valida(tabla_api, cuerpo):
+    c, _ = tabla_api(_fila(1), _fila(2, rol="Facturista"))
+    assert c.patch("/usuarios/2", headers=H, json=cuerpo).status_code == 400
+
+
+def test_modificar_usuario_inexistente(tabla_api):
+    c, _ = tabla_api(_fila(1))
+    assert c.patch("/usuarios/99", headers=H, json={"activo": False}).status_code == 404
+
+
+def test_restablecer_contrasena_y_entrar(tabla_api, login_api):
+    c, t = tabla_api(_fila(1), _fila(2, rol="Facturista", intentos_fallidos=3))
+    r = c.post("/usuarios/2/contrasena", headers=H, json={"password": "OtraClave2027xy"})
+    assert r.status_code == 200
+    assert t.filas[2]["intentos_fallidos"] == 0  # se desbloquea
+    assert contrasenas.verificar("OtraClave2027xy", t.filas[2]["password_hash"])
+    assert not contrasenas.verificar("ClaveSegura2026", t.filas[2]["password_hash"])
+
+
+@pytest.mark.parametrize("password", ["corta1", "Persona2026abcd", "p2p2p2p2p2p2"])
+def test_restablecer_contrasena_valida_reglas(tabla_api, password):
+    c, t = tabla_api(_fila(1), _fila(2, rol="Facturista"))
+    antes = t.filas[2]["password_hash"]
+    assert c.post("/usuarios/2/contrasena", headers=H, json={"password": password}).status_code == 422
+    assert t.filas[2]["password_hash"] == antes
+
+
+def test_cambiar_mi_contrasena(tabla_api):
+    c, t = tabla_api(_fila(2, rol="Facturista"))
+    r = c.post("/auth/cambiar-contrasena", headers=H,
+               json={"id_usuario": 2, "actual": "ClaveSegura2026", "nueva": "MiNuevaClave2027"})
+    assert r.status_code == 200
+    assert contrasenas.verificar("MiNuevaClave2027", t.filas[2]["password_hash"])
+
+
+def test_cambiar_mi_contrasena_con_la_actual_mal_suma_intento(tabla_api):
+    c, t = tabla_api(_fila(2, rol="Facturista", intentos_fallidos=1))
+    r = c.post("/auth/cambiar-contrasena", headers=H,
+               json={"id_usuario": 2, "actual": "equivocada", "nueva": "MiNuevaClave2027"})
+    assert r.status_code == 403 and r.json()["mensaje"] == "La contraseña actual no es correcta"
+    assert t.filas[2]["intentos_fallidos"] == 2
+    assert contrasenas.verificar("ClaveSegura2026", t.filas[2]["password_hash"])
+
+
+def test_cambiar_mi_contrasena_quinto_error_bloquea(tabla_api):
+    c, t = tabla_api(_fila(2, rol="Facturista", intentos_fallidos=4))
+    c.post("/auth/cambiar-contrasena", headers=H,
+           json={"id_usuario": 2, "actual": "equivocada", "nueva": "MiNuevaClave2027"})
+    assert any("bloqueado_hasta = CURRENT_TIMESTAMP + INTERVAL" in s for s, _ in t.ejecutado)
+
+
+@pytest.mark.parametrize("nueva, mensaje", [("ClaveSegura2026", "distinta"), ("corta1", "12 caracteres")])
+def test_cambiar_mi_contrasena_valida_la_nueva(tabla_api, nueva, mensaje):
+    c, _ = tabla_api(_fila(2, rol="Facturista"))
+    r = c.post("/auth/cambiar-contrasena", headers=H,
+               json={"id_usuario": 2, "actual": "ClaveSegura2026", "nueva": nueva})
+    assert r.status_code == 422 and mensaje in r.json()["mensaje"]
+
+
+def test_usuario_inactivo_no_cambia_contrasena(tabla_api):
+    c, _ = tabla_api(_fila(2, rol="Facturista", activo=False))
+    r = c.post("/auth/cambiar-contrasena", headers=H,
+               json={"id_usuario": 2, "actual": "ClaveSegura2026", "nueva": "MiNuevaClave2027"})
+    assert r.status_code == 404
+
+
+def test_obtener_usuario(tabla_api):
+    c, _ = tabla_api(_fila(2, rol="Facturista"))
+    r = c.get("/usuarios/2", headers=H)
+    assert r.status_code == 200 and r.json()["rol"] == "Facturista" and "password_hash" not in r.text
+    assert c.get("/usuarios/99", headers=H).status_code == 404
+
+
+def test_contrasena_con_el_nombre_sin_acento_se_rechaza(usuarios_api):
+    c, cursor = usuarios_api()
+    r = c.post("/usuarios", headers=H, json={**NUEVO, "password": "Perez2026clave"})  # nombre: Pérez
+    assert r.status_code == 422 and "nombre" in r.json()["mensaje"] and cursor.insertado is None

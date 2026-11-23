@@ -5,7 +5,8 @@ from pydantic import Field
 from .. import contrasenas
 from ..db import obtener_conexion
 from ..errores import ErrorNegocio
-from ..esquemas import EMAIL, Estricto
+from ..esquemas import EMAIL, CambioPropio, Estricto
+from .usuarios import guardar_contrasena, validar_contrasena
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
 
@@ -63,3 +64,37 @@ def login(datos: Credenciales, cur=Depends(obtener_conexion)):
     cur.connection.commit()
     return {"id_usuario": usuario["id_usuario"], "nombre": usuario["nombre"],
             "email": usuario["email"], "rol": usuario["rol"]}
+
+
+@router.post("/cambiar-contrasena")
+def cambiar_contrasena(datos: CambioPropio, cur=Depends(obtener_conexion)):
+    """El usuario cambia su propia contraseña. Equivocarse en la actual cuenta como intento fallido."""
+    cur.execute(
+        """SELECT id_usuario, nombre, email, activo, password_hash, intentos_fallidos,
+                  bloqueado_hasta > CURRENT_TIMESTAMP AS bloqueado
+           FROM usuarios WHERE id_usuario = %s FOR UPDATE""",
+        (datos.id_usuario,),
+    )
+    usuario = cur.fetchone()
+    if not usuario or not usuario["activo"]:
+        raise ErrorNegocio("Usuario no encontrado o inactivo", status=404)
+    if usuario["bloqueado"]:
+        raise ErrorNegocio(f"Cuenta bloqueada por intentos fallidos. Intenta en {MINUTOS_BLOQUEO} minutos.",
+                           status=423)
+    if not usuario["password_hash"] or not contrasenas.verificar(datos.actual, usuario["password_hash"]):
+        intentos = usuario["intentos_fallidos"] + 1
+        if intentos >= MAX_INTENTOS:
+            cur.execute("""UPDATE usuarios SET intentos_fallidos = 0,
+                               bloqueado_hasta = CURRENT_TIMESTAMP + INTERVAL %s MINUTE
+                           WHERE id_usuario = %s""", (MINUTOS_BLOQUEO, usuario["id_usuario"]))
+        else:
+            cur.execute("UPDATE usuarios SET intentos_fallidos = %s WHERE id_usuario = %s",
+                        (intentos, usuario["id_usuario"]))
+        cur.connection.commit()
+        raise ErrorNegocio("La contraseña actual no es correcta", status=403)
+    if datos.nueva == datos.actual:
+        raise ErrorNegocio("La contraseña nueva debe ser distinta a la actual")
+    validar_contrasena(datos.nueva, usuario["nombre"], usuario["email"])
+    guardar_contrasena(cur, usuario["id_usuario"], datos.nueva)
+    cur.connection.commit()
+    return {"mensaje": "Contraseña actualizada"}

@@ -51,6 +51,7 @@ seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/salud` | Comprobación de vida |
+| POST | `/auth/cambiar-contrasena` | El usuario cambia la suya (`id_usuario`, `actual`, `nueva`); 5 errores bloquean 15 min |
 | POST | `/auth/login` | Valida correo y contraseña (`email`, `password`); 5 fallos bloquean la cuenta 15 min |
 | GET | `/catalogos` | Regímenes, usos de CFDI, formas y métodos de pago, impuestos, usuarios |
 | GET | `/clientes?incluir_inactivos=&limite=&desde=` | Lista de clientes |
@@ -64,6 +65,9 @@ seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
 | GET | `/pagos?folio=` | Lista de pagos |
 | POST | `/pagos` | Registra pago (`folio`, `clave_forma_pago`, `monto`, `referencia?`) |
 | GET | `/usuarios` | Lista de usuarios (sin hash de contraseña) |
+| GET | `/usuarios/{id}` | Un usuario (el front lo usa para revisar que siga activo) |
+| PATCH | `/usuarios/{id}` | `activo` y/o `rol`; nunca deja la app sin un Administrador activo |
+| POST | `/usuarios/{id}/contrasena` | Un Administrador pone contraseña nueva (`password`); desbloquea la cuenta |
 | POST | `/usuarios` | Alta (`nombre`, `apellidos`, `email`, `password`, `rol`): contraseña de 12+ con letras y números, sin nombre ni correo; se guarda cifrada |
 
 ## Reglas de negocio
