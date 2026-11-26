@@ -78,6 +78,8 @@ CREATE TABLE facturas (
     fecha_emision DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     subtotal DECIMAL(12,2) NOT NULL CHECK (subtotal >= 0),
     iva DECIMAL(12,2) NOT NULL CHECK (iva >= 0),
+    -- ISR retenido: se resta del total cuando el cliente es persona moral
+    isr DECIMAL(12,2) NOT NULL DEFAULT 0 CHECK (isr >= 0),
     total DECIMAL(12,2) NOT NULL CHECK (total >= 0),
     estatus ENUM('vigente', 'pagada', 'cancelada') NOT NULL DEFAULT 'vigente',
     motivo_cancelacion VARCHAR(255) NULL,
@@ -105,6 +107,8 @@ CREATE TABLE detalle_factura (
     id_impuesto INT NOT NULL,
     tasa_aplicada DECIMAL(6,4) NOT NULL CHECK (tasa_aplicada >= 0),
     iva_importe DECIMAL(12,2) NOT NULL CHECK (iva_importe >= 0),
+    tasa_isr DECIMAL(6,4) NOT NULL DEFAULT 0 CHECK (tasa_isr >= 0),
+    isr_importe DECIMAL(12,2) NOT NULL DEFAULT 0 CHECK (isr_importe >= 0),
     CONSTRAINT fk_detalle_factura FOREIGN KEY (id_factura)
         REFERENCES facturas(id_factura) ON UPDATE CASCADE ON DELETE CASCADE,
     CONSTRAINT fk_detalle_impuesto FOREIGN KEY (id_impuesto)

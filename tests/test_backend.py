@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import db
-from app.calculos import calcular_concepto, calcular_totales
+from app.calculos import TASA_ISR, calcular_concepto, calcular_totales, tasa_isr_para
 from app.config import Config
 from app.main import crear_app
 from app.routers import facturas
@@ -23,6 +23,7 @@ class CursorFalso:
         self.connection = self
         self.commits = 0
         self.pagos_previos = Decimal("0")
+        self.tipo_persona = "F"
 
     def commit(self):
         self.commits += 1
@@ -30,8 +31,8 @@ class CursorFalso:
     def execute(self, sql, params=()):
         self.ejecutado.append((" ".join(sql.split()), params))
         s = sql
-        if "FROM clientes WHERE id_cliente" in s:
-            self._resultado = [{"id_cliente": 1, "activo": 1}]
+        if "FROM clientes c JOIN regimenes_fiscales" in s:
+            self._resultado = [{"id_cliente": 1, "activo": 1, "tipo_persona": self.tipo_persona}]
         elif "FROM usuarios WHERE" in s:
             self._resultado = [{"1": 1}]
         elif "FROM formas_pago WHERE clave" in s:
@@ -87,14 +88,29 @@ FACTURA = {"id_cliente": 1, "id_usuario": 1, "clave_forma_pago": "03",
 
 # ---------- cálculos ----------
 def test_calculo_concepto_y_totales():
-    importe, iva = calcular_concepto(Decimal("3"), Decimal("349"), Decimal("0.16"))
-    assert (importe, iva) == (Decimal("1047.00"), Decimal("167.52"))
-    sub, iva_t, total = calcular_totales([{"importe": importe, "iva_importe": iva}])
+    importe, iva, isr = calcular_concepto(Decimal("3"), Decimal("349"), Decimal("0.16"))
+    assert (importe, iva, isr) == (Decimal("1047.00"), Decimal("167.52"), Decimal("0.00"))
+    sub, iva_t, isr_t, total = calcular_totales([{"importe": importe, "iva_importe": iva,
+                                                  "isr_importe": isr}])
     assert total == Decimal("1214.52")
 
 
+def test_calculo_con_retencion_de_isr():
+    importe, iva, isr = calcular_concepto(Decimal("3"), Decimal("349"), Decimal("0.16"), TASA_ISR)
+    assert isr == Decimal("104.70")
+    sub, iva_t, isr_t, total = calcular_totales([{"importe": importe, "iva_importe": iva,
+                                                  "isr_importe": isr}])
+    assert (sub, iva_t, isr_t, total) == (Decimal("1047.00"), Decimal("167.52"),
+                                          Decimal("104.70"), Decimal("1109.82"))
+
+
+@pytest.mark.parametrize("tipo, tasa", [("M", Decimal("0.10")), ("F", Decimal("0")), ("FM", Decimal("0"))])
+def test_isr_solo_para_personas_morales(tipo, tasa):
+    assert tasa_isr_para(tipo) == tasa
+
+
 def test_redondeo_mitad_hacia_arriba():
-    _, iva = calcular_concepto(Decimal("1"), Decimal("0.03"), Decimal("0.5"))
+    _, iva, _ = calcular_concepto(Decimal("1"), Decimal("0.03"), Decimal("0.5"))
     assert iva == Decimal("0.02")
 
 
@@ -144,8 +160,21 @@ def test_factura_calcula_totales_en_servidor(cliente_api):
         {"id_servicio": "SRV-001", "cantidad": 2}]})
     assert r.status_code == 201
     insert = next(p for s, p in cursor.ejecutado if s.startswith("INSERT INTO facturas"))
-    assert insert[-3:] == (Decimal("698.00"), Decimal("111.68"), Decimal("809.68"))
+    assert insert[-4:] == (Decimal("698.00"), Decimal("111.68"), Decimal("0.00"), Decimal("809.68"))
     assert cursor.commits == 1
+
+
+def test_factura_a_persona_moral_retiene_isr(cliente_api):
+    c, cursor = cliente_api
+    cursor.tipo_persona = "M"
+    r = c.post("/facturas", headers=H, json={**FACTURA, "conceptos": [
+        {"id_servicio": "SRV-001", "cantidad": 2}]})
+    assert r.status_code == 201
+    insert = next(p for s, p in cursor.ejecutado if s.startswith("INSERT INTO facturas"))
+    # 698.00 + 111.68 de IVA - 69.80 de ISR
+    assert insert[-4:] == (Decimal("698.00"), Decimal("111.68"), Decimal("69.80"), Decimal("739.88"))
+    detalle = next(p for s, p in cursor.ejecutado if s.startswith("INSERT INTO detalle_factura"))
+    assert detalle[0][-2:] == (Decimal("0.10"), Decimal("69.80"))
 
 
 def test_pago_mayor_al_saldo_se_rechaza(cliente_api):

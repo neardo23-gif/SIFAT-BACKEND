@@ -76,6 +76,10 @@ seguridad `sifat-rds-sg` (tipo MySQL/Aurora, origen `IP/32`).
   detalle, así la factura conserva el precio al que se vendió.
 - Factura, conceptos y totales se guardan en **una sola transacción** (ROLLBACK si algo falla).
 - Los totales se calculan **en el servidor** con `Decimal` (redondeo a centavos, mitad hacia arriba).
+- **Retención de ISR:** si el cliente es persona moral (régimen con `tipo_persona = 'M'`, p. ej. 601 o 603)
+  se retiene 10 % de ISR sobre el importe de cada concepto: `total = subtotal + IVA − ISR`.
+  La tasa la pone el servidor; el saldo y los pagos se calculan sobre ese total neto.
+  En una base existente aplica antes `sql/05_isr.sql` (como admin).
 - Un pago no puede superar el saldo; al liquidar, la factura pasa a `pagada`.
   La fila se bloquea (`SELECT ... FOR UPDATE`) para evitar pagos simultáneos.
 - Las facturas no se borran: se **cancelan**. Los clientes no se borran: se **desactivan**.

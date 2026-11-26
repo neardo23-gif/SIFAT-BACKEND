@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from ..calculos import calcular_concepto, calcular_totales
+from ..calculos import calcular_concepto, calcular_totales, tasa_isr_para
 from ..db import obtener_conexion
 from ..errores import ErrorNegocio
 from ..esquemas import Cancelacion, FacturaNueva
@@ -13,7 +13,7 @@ from ..servicios_client import obtener_servicio
 router = APIRouter(prefix="/facturas", tags=["Facturas"])
 
 SELECT_FACTURA = """
-    SELECT f.id_factura, f.folio, f.fecha_emision, f.subtotal, f.iva, f.total, f.estatus,
+    SELECT f.id_factura, f.folio, f.fecha_emision, f.subtotal, f.iva, f.isr, f.total, f.estatus,
            f.motivo_cancelacion, f.fecha_cancelacion,
            c.id_cliente, c.rfc, c.razon_social AS cliente,
            u.nombre AS usuario,
@@ -43,7 +43,7 @@ def _detalle_completo(cur, folio):
         raise ErrorNegocio("Factura no encontrada", status=404)
     cur.execute(
         """SELECT id_servicio, clave_servicio, nombre_servicio, cantidad, precio_unitario,
-                  importe, tasa_aplicada, iva_importe
+                  importe, tasa_aplicada, iva_importe, tasa_isr, isr_importe
            FROM detalle_factura WHERE id_factura = %s ORDER BY id_detalle""",
         (factura["id_factura"],),
     )
@@ -89,10 +89,14 @@ def obtener(folio: str, cur=Depends(obtener_conexion)):
 
 @router.post("", status_code=201)
 def crear(datos: FacturaNueva, cur=Depends(obtener_conexion)):
-    cliente = _uno(cur, "SELECT id_cliente, activo FROM clientes WHERE id_cliente = %s",
+    cliente = _uno(cur, """SELECT c.id_cliente, c.activo, r.tipo_persona
+                         FROM clientes c JOIN regimenes_fiscales r ON r.id_regimen = c.id_regimen
+                         WHERE c.id_cliente = %s""",
                    (datos.id_cliente,), "El cliente no existe")
     if not cliente["activo"]:
         raise ErrorNegocio("El cliente está inactivo")
+    # Si el cliente es persona moral retiene ISR; la tasa la decide el servidor, nunca el navegador
+    tasa_isr = tasa_isr_para(cliente["tipo_persona"])
     _uno(cur, "SELECT 1 FROM usuarios WHERE id_usuario = %s AND activo = TRUE",
          (datos.id_usuario,), "El usuario no existe o está inactivo")
     id_forma = _uno(cur, "SELECT id_forma AS id FROM formas_pago WHERE clave = %s",
@@ -115,18 +119,21 @@ def crear(datos: FacturaNueva, cur=Depends(obtener_conexion)):
                 llave, f'El impuesto {s["impuesto_nombre"]} {s["impuesto_tasa"]} no está registrado en MySQL',
             )["id"]
 
-        importe, iva_importe = calcular_concepto(c.cantidad, s["precio_unitario"], s["impuesto_tasa"])
+        importe, iva_importe, isr_importe = calcular_concepto(
+            c.cantidad, s["precio_unitario"], s["impuesto_tasa"], tasa_isr)
         conceptos.append({**s, "cantidad": c.cantidad, "importe": importe,
-                          "iva_importe": iva_importe, "id_impuesto": impuestos[llave]})
+                          "iva_importe": iva_importe, "isr_importe": isr_importe,
+                          "id_impuesto": impuestos[llave]})
 
-    subtotal, iva, total = calcular_totales(conceptos)
+    subtotal, iva, isr, total = calcular_totales(conceptos)
 
     # Folio consecutivo a partir del id: primero un folio temporal único
     cur.execute(
-        """INSERT INTO facturas (folio, id_cliente, id_usuario, id_forma, id_metodo, subtotal, iva, total)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        """INSERT INTO facturas (folio, id_cliente, id_usuario, id_forma, id_metodo,
+                                 subtotal, iva, isr, total)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         ("TMP-" + uuid.uuid4().hex[:16], datos.id_cliente, datos.id_usuario,
-         id_forma, id_metodo, subtotal, iva, total),
+         id_forma, id_metodo, subtotal, iva, isr, total),
     )
     id_factura = cur.lastrowid
     folio = f"FAC-{id_factura:04d}"
@@ -134,10 +141,12 @@ def crear(datos: FacturaNueva, cur=Depends(obtener_conexion)):
 
     cur.executemany(
         """INSERT INTO detalle_factura (id_factura, id_servicio, clave_servicio, nombre_servicio,
-               cantidad, precio_unitario, importe, id_impuesto, tasa_aplicada, iva_importe)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               cantidad, precio_unitario, importe, id_impuesto, tasa_aplicada, iva_importe,
+               tasa_isr, isr_importe)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         [(id_factura, c["id_servicio"], c["clave"], c["nombre"], c["cantidad"],
-          c["precio_unitario"], c["importe"], c["id_impuesto"], c["impuesto_tasa"], c["iva_importe"])
+          c["precio_unitario"], c["importe"], c["id_impuesto"], c["impuesto_tasa"], c["iva_importe"],
+          tasa_isr, c["isr_importe"])
          for c in conceptos],
     )
     factura = _detalle_completo(cur, folio)
